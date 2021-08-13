@@ -1,9 +1,16 @@
 <script>
-	export let name;
+  import Age from './Age.svelte'
+  let feeling
+	export let C
 </script>
 
 <main>
-	<h1>Hello {name}!</h1>
+  {#if feeling}
+  <h1>Hi {feeling}, I'm dad!</h1>
+  {/if}
+  <p>How are you feeling today?</p>
+  <input bind:value={feeling}>
+  <!-- <Age age={C.age} /> -->
 	<p>Visit the <a href="https://svelte.dev/tutorial">Svelte tutorial</a> to learn how to build Svelte apps.</p>
 </main>
 
