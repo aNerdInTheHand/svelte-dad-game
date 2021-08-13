@@ -24,8 +24,31 @@ var app = (function () {
     function safe_not_equal(a, b) {
         return a != a ? b == b : a !== b || ((a && typeof a === 'object') || typeof a === 'function');
     }
+    let src_url_equal_anchor;
+    function src_url_equal(element_src, url) {
+        if (!src_url_equal_anchor) {
+            src_url_equal_anchor = document.createElement('a');
+        }
+        src_url_equal_anchor.href = url;
+        return element_src === src_url_equal_anchor.href;
+    }
     function is_empty(obj) {
         return Object.keys(obj).length === 0;
+    }
+    function validate_store(store, name) {
+        if (store != null && typeof store.subscribe !== 'function') {
+            throw new Error(`'${name}' is not a store with a 'subscribe' method`);
+        }
+    }
+    function subscribe(store, ...callbacks) {
+        if (store == null) {
+            return noop;
+        }
+        const unsub = store.subscribe(...callbacks);
+        return unsub.unsubscribe ? () => unsub.unsubscribe() : unsub;
+    }
+    function component_subscribe(component, store, callback) {
+        component.$$.on_destroy.push(subscribe(store, callback));
     }
     function append(target, node) {
         target.appendChild(node);
@@ -36,6 +59,12 @@ var app = (function () {
     function detach(node) {
         node.parentNode.removeChild(node);
     }
+    function destroy_each(iterations, detaching) {
+        for (let i = 0; i < iterations.length; i += 1) {
+            if (iterations[i])
+                iterations[i].d(detaching);
+        }
+    }
     function element(name) {
         return document.createElement(name);
     }
@@ -45,9 +74,19 @@ var app = (function () {
     function space() {
         return text(' ');
     }
+    function empty() {
+        return text('');
+    }
     function listen(node, event, handler, options) {
         node.addEventListener(event, handler, options);
         return () => node.removeEventListener(event, handler, options);
+    }
+    function prevent_default(fn) {
+        return function (event) {
+            event.preventDefault();
+            // @ts-ignore
+            return fn.call(this, event);
+        };
     }
     function attr(node, attribute, value) {
         if (value == null)
@@ -60,6 +99,19 @@ var app = (function () {
     }
     function set_input_value(input, value) {
         input.value = value == null ? '' : value;
+    }
+    function select_option(select, value) {
+        for (let i = 0; i < select.options.length; i += 1) {
+            const option = select.options[i];
+            if (option.__value === value) {
+                option.selected = true;
+                return;
+            }
+        }
+    }
+    function select_value(select) {
+        const selected_option = select.querySelector(':checked') || select.options[0];
+        return selected_option && selected_option.__value;
     }
     function custom_event(type, detail, bubbles = false) {
         const e = document.createEvent('CustomEvent');
@@ -136,11 +188,50 @@ var app = (function () {
         }
     }
     const outroing = new Set();
+    let outros;
+    function group_outros() {
+        outros = {
+            r: 0,
+            c: [],
+            p: outros // parent group
+        };
+    }
+    function check_outros() {
+        if (!outros.r) {
+            run_all(outros.c);
+        }
+        outros = outros.p;
+    }
     function transition_in(block, local) {
         if (block && block.i) {
             outroing.delete(block);
             block.i(local);
         }
+    }
+    function transition_out(block, local, detach, callback) {
+        if (block && block.o) {
+            if (outroing.has(block))
+                return;
+            outroing.add(block);
+            outros.c.push(() => {
+                outroing.delete(block);
+                if (callback) {
+                    if (detach)
+                        block.d(1);
+                    callback();
+                }
+            });
+            block.o(local);
+        }
+    }
+
+    const globals = (typeof window !== 'undefined'
+        ? window
+        : typeof globalThis !== 'undefined'
+            ? globalThis
+            : global);
+    function create_component(block) {
+        block && block.c();
     }
     function mount_component(component, target, anchor, customElement) {
         const { fragment, on_mount, on_destroy, after_update } = component.$$;
@@ -303,12 +394,25 @@ var app = (function () {
         else
             dispatch_dev('SvelteDOMSetAttribute', { node, attribute, value });
     }
+    function prop_dev(node, property, value) {
+        node[property] = value;
+        dispatch_dev('SvelteDOMSetProperty', { node, property, value });
+    }
     function set_data_dev(text, data) {
         data = '' + data;
         if (text.wholeText === data)
             return;
         dispatch_dev('SvelteDOMSetData', { node: text, data });
         text.data = data;
+    }
+    function validate_each_argument(arg) {
+        if (typeof arg !== 'string' && !(arg && typeof arg === 'object' && 'length' in arg)) {
+            let msg = '{#each} only iterates over array-like objects.';
+            if (typeof Symbol === 'function' && arg && Symbol.iterator in arg) {
+                msg += ' You can use a spread to convert this iterable into an array.';
+            }
+            throw new Error(msg);
+        }
     }
     function validate_slots(name, slot, keys) {
         for (const slot_key of Object.keys(slot)) {
@@ -337,40 +441,633 @@ var app = (function () {
         $inject_state() { }
     }
 
-    /* src/Age.svelte generated by Svelte v3.42.1 */
+    const subscriber_queue = [];
+    /**
+     * Creates a `Readable` store that allows reading by subscription.
+     * @param value initial value
+     * @param {StartStopNotifier}start start and stop notifications for subscriptions
+     */
+    function readable(value, start) {
+        return {
+            subscribe: writable(value, start).subscribe
+        };
+    }
+    /**
+     * Create a `Writable` store that allows both updating and reading by subscription.
+     * @param {*=}value initial value
+     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
+     */
+    function writable(value, start = noop) {
+        let stop;
+        const subscribers = new Set();
+        function set(new_value) {
+            if (safe_not_equal(value, new_value)) {
+                value = new_value;
+                if (stop) { // store is ready
+                    const run_queue = !subscriber_queue.length;
+                    for (const subscriber of subscribers) {
+                        subscriber[1]();
+                        subscriber_queue.push(subscriber, value);
+                    }
+                    if (run_queue) {
+                        for (let i = 0; i < subscriber_queue.length; i += 2) {
+                            subscriber_queue[i][0](subscriber_queue[i + 1]);
+                        }
+                        subscriber_queue.length = 0;
+                    }
+                }
+            }
+        }
+        function update(fn) {
+            set(fn(value));
+        }
+        function subscribe(run, invalidate = noop) {
+            const subscriber = [run, invalidate];
+            subscribers.add(subscriber);
+            if (subscribers.size === 1) {
+                stop = start(set) || noop;
+            }
+            run(value);
+            return () => {
+                subscribers.delete(subscriber);
+                if (subscribers.size === 0) {
+                    stop();
+                    stop = null;
+                }
+            };
+        }
+        return { set, update, subscribe };
+    }
+    function derived(stores, fn, initial_value) {
+        const single = !Array.isArray(stores);
+        const stores_array = single
+            ? [stores]
+            : stores;
+        const auto = fn.length < 2;
+        return readable(initial_value, (set) => {
+            let inited = false;
+            const values = [];
+            let pending = 0;
+            let cleanup = noop;
+            const sync = () => {
+                if (pending) {
+                    return;
+                }
+                cleanup();
+                const result = fn(single ? values[0] : values, set);
+                if (auto) {
+                    set(result);
+                }
+                else {
+                    cleanup = is_function(result) ? result : noop;
+                }
+            };
+            const unsubscribers = stores_array.map((store, i) => subscribe(store, (value) => {
+                values[i] = value;
+                pending &= ~(1 << i);
+                if (inited) {
+                    sync();
+                }
+            }, () => {
+                pending |= (1 << i);
+            }));
+            inited = true;
+            sync();
+            return function stop() {
+                run_all(unsubscribers);
+                cleanup();
+            };
+        });
+    }
 
-    const file$1 = "src/Age.svelte";
+    var constants = {
+      feelings: ['- Pick one -', 'Awful', 'Could be better', 'Ok', 'Pretty good thanks', 'Amazing'],
+      gameStates: {
+        main: 'main',
+        prestart: 'prestart',
+        setup: 'setup'
+      }
+    };
 
-    function create_fragment$1(ctx) {
-    	let div;
+    const name = writable('');
+    const feeling = writable('');
+    const gameState = writable(constants.gameStates.prestart);
+
+    derived(
+    	name,
+    	$name => `Hi ${$name}, I'm dad!`
+    );
+
+    const jokeGreeting = derived(
+      feeling,
+      $feeling => `Hi ${$feeling.toLocaleLowerCase()}, I'm dad!`
+    );
+
+    /* src/Main.svelte generated by Svelte v3.42.1 */
+    const file$3 = "src/Main.svelte";
+
+    function create_fragment$3(ctx) {
+    	let h1;
     	let t0;
     	let t1;
     	let t2;
+    	let img;
+    	let img_src_value;
 
     	const block = {
     		c: function create() {
-    			div = element("div");
-    			t0 = text("You are looking ");
-    			t1 = text(/*age*/ ctx[0]);
-    			t2 = text(" years old today!");
-    			add_location(div, file$1, 4, 0, 37);
+    			h1 = element("h1");
+    			t0 = text(/*$name*/ ctx[0]);
+    			t1 = text(" has had an unfortunate Svelting accident.");
+    			t2 = space();
+    			img = element("img");
+    			add_location(h1, file$3, 6, 0, 161);
+    			if (!src_url_equal(img.src, img_src_value = src)) attr_dev(img, "src", img_src_value);
+    			attr_dev(img, "alt", alt);
+    			add_location(img, file$3, 7, 0, 220);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			append_dev(div, t0);
-    			append_dev(div, t1);
-    			append_dev(div, t2);
+    			insert_dev(target, h1, anchor);
+    			append_dev(h1, t0);
+    			append_dev(h1, t1);
+    			insert_dev(target, t2, anchor);
+    			insert_dev(target, img, anchor);
     		},
     		p: function update(ctx, [dirty]) {
-    			if (dirty & /*age*/ 1) set_data_dev(t1, /*age*/ ctx[0]);
+    			if (dirty & /*$name*/ 1) set_data_dev(t0, /*$name*/ ctx[0]);
     		},
     		i: noop,
     		o: noop,
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
+    			if (detaching) detach_dev(h1);
+    			if (detaching) detach_dev(t2);
+    			if (detaching) detach_dev(img);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$3.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    const src = 'https://media.giphy.com/media/3ohhwzqvVKe4KHAXOE/giphy.gif';
+    const alt = 'gooooold member';
+
+    function instance$3($$self, $$props, $$invalidate) {
+    	let $name;
+    	validate_store(name, 'name');
+    	component_subscribe($$self, name, $$value => $$invalidate(0, $name = $$value));
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots('Main', slots, []);
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Main> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$capture_state = () => ({ name, src, alt, $name });
+    	return [$name];
+    }
+
+    class Main extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$3, create_fragment$3, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "Main",
+    			options,
+    			id: create_fragment$3.name
+    		});
+    	}
+    }
+
+    /* src/Prestart.svelte generated by Svelte v3.42.1 */
+    const file$2 = "src/Prestart.svelte";
+
+    function get_each_context(ctx, list, i) {
+    	const child_ctx = ctx.slice();
+    	child_ctx[6] = list[i];
+    	return child_ctx;
+    }
+
+    // (17:6) {#each C.feelings as f}
+    function create_each_block(ctx) {
+    	let option;
+    	let t0_value = /*f*/ ctx[6] + "";
+    	let t0;
+    	let t1;
+
+    	const block = {
+    		c: function create() {
+    			option = element("option");
+    			t0 = text(t0_value);
+    			t1 = space();
+    			option.__value = /*f*/ ctx[6];
+    			option.value = option.__value;
+    			add_location(option, file$2, 17, 8, 379);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, option, anchor);
+    			append_dev(option, t0);
+    			append_dev(option, t1);
+    		},
+    		p: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(option);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_each_block.name,
+    		type: "each",
+    		source: "(17:6) {#each C.feelings as f}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (29:2) {#if answered}
+    function create_if_block$1(ctx) {
+    	let h2;
+    	let t0;
+    	let t1;
+    	let button;
+    	let mounted;
+    	let dispose;
+
+    	const block = {
+    		c: function create() {
+    			h2 = element("h2");
+    			t0 = text(/*$jokeGreeting*/ ctx[2]);
+    			t1 = space();
+    			button = element("button");
+    			button.textContent = "That's not funny.";
+    			add_location(h2, file$2, 29, 4, 568);
+    			add_location(button, file$2, 30, 4, 597);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, h2, anchor);
+    			append_dev(h2, t0);
+    			insert_dev(target, t1, anchor);
+    			insert_dev(target, button, anchor);
+
+    			if (!mounted) {
+    				dispose = listen_dev(button, "click", /*click_handler*/ ctx[5], false, false, false);
+    				mounted = true;
+    			}
+    		},
+    		p: function update(ctx, dirty) {
+    			if (dirty & /*$jokeGreeting*/ 4) set_data_dev(t0, /*$jokeGreeting*/ ctx[2]);
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(h2);
+    			if (detaching) detach_dev(t1);
+    			if (detaching) detach_dev(button);
+    			mounted = false;
+    			dispose();
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_if_block$1.name,
+    		type: "if",
+    		source: "(29:2) {#if answered}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function create_fragment$2(ctx) {
+    	let h1;
+    	let t1;
+    	let p0;
+    	let t3;
+    	let p1;
+    	let t5;
+    	let form;
+    	let select;
+    	let t6;
+    	let button;
+    	let t7;
+    	let button_disabled_value;
+    	let t8;
+    	let if_block_anchor;
+    	let mounted;
+    	let dispose;
+    	let each_value = constants.feelings;
+    	validate_each_argument(each_value);
+    	let each_blocks = [];
+
+    	for (let i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
+    	}
+
+    	let if_block = /*answered*/ ctx[0] && create_if_block$1(ctx);
+
+    	const block = {
+    		c: function create() {
+    			h1 = element("h1");
+    			h1.textContent = "Welcome to the dad game!";
+    			t1 = space();
+    			p0 = element("p");
+    			p0.textContent = "Let's get started.";
+    			t3 = space();
+    			p1 = element("p");
+    			p1.textContent = "How are you feeling today?";
+    			t5 = space();
+    			form = element("form");
+    			select = element("select");
+
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+
+    			t6 = space();
+    			button = element("button");
+    			t7 = text("Submit");
+    			t8 = space();
+    			if (if_block) if_block.c();
+    			if_block_anchor = empty();
+    			add_location(h1, file$2, 10, 0, 149);
+    			add_location(p0, file$2, 11, 2, 185);
+    			add_location(p1, file$2, 12, 2, 213);
+    			if (/*$feeling*/ ctx[1] === void 0) add_render_callback(() => /*select_change_handler*/ ctx[3].call(select));
+    			add_location(select, file$2, 15, 4, 310);
+    			button.disabled = button_disabled_value = !/*$feeling*/ ctx[1];
+    			attr_dev(button, "type", "submit");
+    			add_location(button, file$2, 23, 4, 465);
+    			add_location(form, file$2, 14, 2, 250);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, h1, anchor);
+    			insert_dev(target, t1, anchor);
+    			insert_dev(target, p0, anchor);
+    			insert_dev(target, t3, anchor);
+    			insert_dev(target, p1, anchor);
+    			insert_dev(target, t5, anchor);
+    			insert_dev(target, form, anchor);
+    			append_dev(form, select);
+
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(select, null);
+    			}
+
+    			select_option(select, /*$feeling*/ ctx[1]);
+    			append_dev(form, t6);
+    			append_dev(form, button);
+    			append_dev(button, t7);
+    			insert_dev(target, t8, anchor);
+    			if (if_block) if_block.m(target, anchor);
+    			insert_dev(target, if_block_anchor, anchor);
+
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(select, "change", /*select_change_handler*/ ctx[3]),
+    					listen_dev(form, "submit", prevent_default(/*submit_handler*/ ctx[4]), false, true, false)
+    				];
+
+    				mounted = true;
+    			}
+    		},
+    		p: function update(ctx, [dirty]) {
+    			if (dirty & /*C*/ 0) {
+    				each_value = constants.feelings;
+    				validate_each_argument(each_value);
+    				let i;
+
+    				for (i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(child_ctx, dirty);
+    					} else {
+    						each_blocks[i] = create_each_block(child_ctx);
+    						each_blocks[i].c();
+    						each_blocks[i].m(select, null);
+    					}
+    				}
+
+    				for (; i < each_blocks.length; i += 1) {
+    					each_blocks[i].d(1);
+    				}
+
+    				each_blocks.length = each_value.length;
+    			}
+
+    			if (dirty & /*$feeling, C*/ 2) {
+    				select_option(select, /*$feeling*/ ctx[1]);
+    			}
+
+    			if (dirty & /*$feeling, C*/ 2 && button_disabled_value !== (button_disabled_value = !/*$feeling*/ ctx[1])) {
+    				prop_dev(button, "disabled", button_disabled_value);
+    			}
+
+    			if (/*answered*/ ctx[0]) {
+    				if (if_block) {
+    					if_block.p(ctx, dirty);
+    				} else {
+    					if_block = create_if_block$1(ctx);
+    					if_block.c();
+    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
+    				}
+    			} else if (if_block) {
+    				if_block.d(1);
+    				if_block = null;
+    			}
+    		},
+    		i: noop,
+    		o: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(h1);
+    			if (detaching) detach_dev(t1);
+    			if (detaching) detach_dev(p0);
+    			if (detaching) detach_dev(t3);
+    			if (detaching) detach_dev(p1);
+    			if (detaching) detach_dev(t5);
+    			if (detaching) detach_dev(form);
+    			destroy_each(each_blocks, detaching);
+    			if (detaching) detach_dev(t8);
+    			if (if_block) if_block.d(detaching);
+    			if (detaching) detach_dev(if_block_anchor);
+    			mounted = false;
+    			run_all(dispose);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$2.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function instance$2($$self, $$props, $$invalidate) {
+    	let $feeling;
+    	let $jokeGreeting;
+    	validate_store(feeling, 'feeling');
+    	component_subscribe($$self, feeling, $$value => $$invalidate(1, $feeling = $$value));
+    	validate_store(jokeGreeting, 'jokeGreeting');
+    	component_subscribe($$self, jokeGreeting, $$value => $$invalidate(2, $jokeGreeting = $$value));
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots('Prestart', slots, []);
+    	let answered = false;
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Prestart> was created with unknown prop '${key}'`);
+    	});
+
+    	function select_change_handler() {
+    		$feeling = select_value(this);
+    		feeling.set($feeling);
+    	}
+
+    	const submit_handler = () => $$invalidate(0, answered = true);
+    	const click_handler = () => gameState.update(g => constants.gameStates.setup);
+
+    	$$self.$capture_state = () => ({
+    		C: constants,
+    		feeling,
+    		gameState,
+    		jokeGreeting,
+    		answered,
+    		$feeling,
+    		$jokeGreeting
+    	});
+
+    	$$self.$inject_state = $$props => {
+    		if ('answered' in $$props) $$invalidate(0, answered = $$props.answered);
+    	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
+
+    	return [
+    		answered,
+    		$feeling,
+    		$jokeGreeting,
+    		select_change_handler,
+    		submit_handler,
+    		click_handler
+    	];
+    }
+
+    class Prestart extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$2, create_fragment$2, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "Prestart",
+    			options,
+    			id: create_fragment$2.name
+    		});
+    	}
+    }
+
+    /* src/Start.svelte generated by Svelte v3.42.1 */
+    const file$1 = "src/Start.svelte";
+
+    function create_fragment$1(ctx) {
+    	let h2;
+    	let t1;
+    	let p;
+    	let t3;
+    	let input;
+    	let t4;
+    	let button;
+    	let t5;
+    	let button_disabled_value;
+    	let mounted;
+    	let dispose;
+
+    	const block = {
+    		c: function create() {
+    			h2 = element("h2");
+    			h2.textContent = "Ok, let's get this show on the road!";
+    			t1 = space();
+    			p = element("p");
+    			p.textContent = "Tell me your name. No jokes, I promise.";
+    			t3 = space();
+    			input = element("input");
+    			t4 = space();
+    			button = element("button");
+    			t5 = text("Submit");
+    			add_location(h2, file$1, 8, 0, 105);
+    			add_location(p, file$1, 9, 0, 151);
+    			add_location(input, file$1, 11, 0, 199);
+    			button.disabled = button_disabled_value = !/*$name*/ ctx[0];
+    			attr_dev(button, "type", "submit");
+    			add_location(button, file$1, 13, 0, 229);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, h2, anchor);
+    			insert_dev(target, t1, anchor);
+    			insert_dev(target, p, anchor);
+    			insert_dev(target, t3, anchor);
+    			insert_dev(target, input, anchor);
+    			set_input_value(input, /*$name*/ ctx[0]);
+    			insert_dev(target, t4, anchor);
+    			insert_dev(target, button, anchor);
+    			append_dev(button, t5);
+
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input, "input", /*input_input_handler*/ ctx[1]),
+    					listen_dev(button, "click", /*click_handler*/ ctx[2], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
+    		},
+    		p: function update(ctx, [dirty]) {
+    			if (dirty & /*$name*/ 1 && input.value !== /*$name*/ ctx[0]) {
+    				set_input_value(input, /*$name*/ ctx[0]);
+    			}
+
+    			if (dirty & /*$name*/ 1 && button_disabled_value !== (button_disabled_value = !/*$name*/ ctx[0])) {
+    				prop_dev(button, "disabled", button_disabled_value);
+    			}
+    		},
+    		i: noop,
+    		o: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(h2);
+    			if (detaching) detach_dev(t1);
+    			if (detaching) detach_dev(p);
+    			if (detaching) detach_dev(t3);
+    			if (detaching) detach_dev(input);
+    			if (detaching) detach_dev(t4);
+    			if (detaching) detach_dev(button);
+    			mounted = false;
+    			run_all(dispose);
     		}
     	};
 
@@ -386,91 +1083,149 @@ var app = (function () {
     }
 
     function instance$1($$self, $$props, $$invalidate) {
+    	let $name;
+    	validate_store(name, 'name');
+    	component_subscribe($$self, name, $$value => $$invalidate(0, $name = $$value));
     	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Age', slots, []);
-    	let { age } = $$props;
-    	const writable_props = ['age'];
+    	validate_slots('Start', slots, []);
+    	const writable_props = [];
 
     	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Age> was created with unknown prop '${key}'`);
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Start> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$$set = $$props => {
-    		if ('age' in $$props) $$invalidate(0, age = $$props.age);
-    	};
-
-    	$$self.$capture_state = () => ({ age });
-
-    	$$self.$inject_state = $$props => {
-    		if ('age' in $$props) $$invalidate(0, age = $$props.age);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
+    	function input_input_handler() {
+    		$name = this.value;
+    		name.set($name);
     	}
 
-    	return [age];
+    	const click_handler = () => gameState.update(g => constants.gameStates.main);
+    	$$self.$capture_state = () => ({ C: constants, gameState, name, $name });
+    	return [$name, input_input_handler, click_handler];
     }
 
-    class Age extends SvelteComponentDev {
+    class Start extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$1, create_fragment$1, safe_not_equal, { age: 0 });
+    		init(this, options, instance$1, create_fragment$1, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
-    			tagName: "Age",
+    			tagName: "Start",
     			options,
     			id: create_fragment$1.name
     		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*age*/ ctx[0] === undefined && !('age' in props)) {
-    			console.warn("<Age> was created without expected prop 'age'");
-    		}
-    	}
-
-    	get age() {
-    		throw new Error("<Age>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set age(value) {
-    		throw new Error("<Age>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
     	}
     }
 
     /* src/App.svelte generated by Svelte v3.42.1 */
+
+    const { console: console_1 } = globals;
     const file = "src/App.svelte";
 
-    // (8:2) {#if feeling}
-    function create_if_block(ctx) {
-    	let h1;
-    	let t0;
-    	let t1;
-    	let t2;
+    // (13:2) {#if $gameState === C.gameStates.prestart}
+    function create_if_block_2(ctx) {
+    	let prestart;
+    	let current;
+    	prestart = new Prestart({ $$inline: true });
 
     	const block = {
     		c: function create() {
-    			h1 = element("h1");
-    			t0 = text("Hi ");
-    			t1 = text(/*feeling*/ ctx[0]);
-    			t2 = text(", I'm dad!");
-    			attr_dev(h1, "class", "svelte-1tky8bj");
-    			add_location(h1, file, 8, 2, 106);
+    			create_component(prestart.$$.fragment);
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, h1, anchor);
-    			append_dev(h1, t0);
-    			append_dev(h1, t1);
-    			append_dev(h1, t2);
+    			mount_component(prestart, target, anchor);
+    			current = true;
     		},
-    		p: function update(ctx, dirty) {
-    			if (dirty & /*feeling*/ 1) set_data_dev(t1, /*feeling*/ ctx[0]);
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(prestart.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(prestart.$$.fragment, local);
+    			current = false;
     		},
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(h1);
+    			destroy_component(prestart, detaching);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_if_block_2.name,
+    		type: "if",
+    		source: "(13:2) {#if $gameState === C.gameStates.prestart}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (17:2) {#if $gameState === C.gameStates.setup}
+    function create_if_block_1(ctx) {
+    	let start;
+    	let current;
+    	start = new Start({ $$inline: true });
+
+    	const block = {
+    		c: function create() {
+    			create_component(start.$$.fragment);
+    		},
+    		m: function mount(target, anchor) {
+    			mount_component(start, target, anchor);
+    			current = true;
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(start.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(start.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			destroy_component(start, detaching);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_if_block_1.name,
+    		type: "if",
+    		source: "(17:2) {#if $gameState === C.gameStates.setup}",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (21:2) {#if $gameState === C.gameStates.main}
+    function create_if_block(ctx) {
+    	let main;
+    	let current;
+    	main = new Main({ $$inline: true });
+
+    	const block = {
+    		c: function create() {
+    			create_component(main.$$.fragment);
+    		},
+    		m: function mount(target, anchor) {
+    			mount_component(main, target, anchor);
+    			current = true;
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(main.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(main.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			destroy_component(main, detaching);
     		}
     	};
 
@@ -478,7 +1233,7 @@ var app = (function () {
     		block,
     		id: create_if_block.name,
     		type: "if",
-    		source: "(8:2) {#if feeling}",
+    		source: "(21:2) {#if $gameState === C.gameStates.main}",
     		ctx
     	});
 
@@ -488,88 +1243,136 @@ var app = (function () {
     function create_fragment(ctx) {
     	let main;
     	let t0;
-    	let p0;
+    	let t1;
     	let t2;
-    	let input;
+    	let p;
     	let t3;
-    	let p1;
-    	let t4;
     	let a;
-    	let t6;
-    	let mounted;
-    	let dispose;
-    	let if_block = /*feeling*/ ctx[0] && create_if_block(ctx);
+    	let t5;
+    	let current;
+    	let if_block0 = /*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.prestart && create_if_block_2(ctx);
+    	let if_block1 = /*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.setup && create_if_block_1(ctx);
+    	let if_block2 = /*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.main && create_if_block(ctx);
 
     	const block = {
     		c: function create() {
     			main = element("main");
-    			if (if_block) if_block.c();
+    			if (if_block0) if_block0.c();
     			t0 = space();
-    			p0 = element("p");
-    			p0.textContent = "How are you feeling today?";
+    			if (if_block1) if_block1.c();
+    			t1 = space();
+    			if (if_block2) if_block2.c();
     			t2 = space();
-    			input = element("input");
-    			t3 = space();
-    			p1 = element("p");
-    			t4 = text("Visit the ");
+    			p = element("p");
+    			t3 = text("Visit the ");
     			a = element("a");
     			a.textContent = "Svelte tutorial";
-    			t6 = text(" to learn how to build Svelte apps.");
-    			add_location(p0, file, 10, 2, 148);
-    			add_location(input, file, 11, 2, 184);
+    			t5 = text(" to learn how to build Svelte apps.");
     			attr_dev(a, "href", "https://svelte.dev/tutorial");
-    			add_location(a, file, 13, 14, 258);
-    			add_location(p1, file, 13, 1, 245);
-    			attr_dev(main, "class", "svelte-1tky8bj");
-    			add_location(main, file, 6, 0, 81);
+    			add_location(a, file, 24, 14, 438);
+    			add_location(p, file, 24, 1, 425);
+    			attr_dev(main, "class", "svelte-1h6otfa");
+    			add_location(main, file, 11, 0, 221);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, main, anchor);
-    			if (if_block) if_block.m(main, null);
+    			if (if_block0) if_block0.m(main, null);
     			append_dev(main, t0);
-    			append_dev(main, p0);
+    			if (if_block1) if_block1.m(main, null);
+    			append_dev(main, t1);
+    			if (if_block2) if_block2.m(main, null);
     			append_dev(main, t2);
-    			append_dev(main, input);
-    			set_input_value(input, /*feeling*/ ctx[0]);
-    			append_dev(main, t3);
-    			append_dev(main, p1);
-    			append_dev(p1, t4);
-    			append_dev(p1, a);
-    			append_dev(p1, t6);
-
-    			if (!mounted) {
-    				dispose = listen_dev(input, "input", /*input_input_handler*/ ctx[2]);
-    				mounted = true;
-    			}
+    			append_dev(main, p);
+    			append_dev(p, t3);
+    			append_dev(p, a);
+    			append_dev(p, t5);
+    			current = true;
     		},
     		p: function update(ctx, [dirty]) {
-    			if (/*feeling*/ ctx[0]) {
-    				if (if_block) {
-    					if_block.p(ctx, dirty);
+    			if (/*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.prestart) {
+    				if (if_block0) {
+    					if (dirty & /*$gameState, C*/ 3) {
+    						transition_in(if_block0, 1);
+    					}
     				} else {
-    					if_block = create_if_block(ctx);
-    					if_block.c();
-    					if_block.m(main, t0);
+    					if_block0 = create_if_block_2(ctx);
+    					if_block0.c();
+    					transition_in(if_block0, 1);
+    					if_block0.m(main, t0);
     				}
-    			} else if (if_block) {
-    				if_block.d(1);
-    				if_block = null;
+    			} else if (if_block0) {
+    				group_outros();
+
+    				transition_out(if_block0, 1, 1, () => {
+    					if_block0 = null;
+    				});
+
+    				check_outros();
     			}
 
-    			if (dirty & /*feeling*/ 1 && input.value !== /*feeling*/ ctx[0]) {
-    				set_input_value(input, /*feeling*/ ctx[0]);
+    			if (/*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.setup) {
+    				if (if_block1) {
+    					if (dirty & /*$gameState, C*/ 3) {
+    						transition_in(if_block1, 1);
+    					}
+    				} else {
+    					if_block1 = create_if_block_1(ctx);
+    					if_block1.c();
+    					transition_in(if_block1, 1);
+    					if_block1.m(main, t1);
+    				}
+    			} else if (if_block1) {
+    				group_outros();
+
+    				transition_out(if_block1, 1, 1, () => {
+    					if_block1 = null;
+    				});
+
+    				check_outros();
+    			}
+
+    			if (/*$gameState*/ ctx[1] === /*C*/ ctx[0].gameStates.main) {
+    				if (if_block2) {
+    					if (dirty & /*$gameState, C*/ 3) {
+    						transition_in(if_block2, 1);
+    					}
+    				} else {
+    					if_block2 = create_if_block(ctx);
+    					if_block2.c();
+    					transition_in(if_block2, 1);
+    					if_block2.m(main, t2);
+    				}
+    			} else if (if_block2) {
+    				group_outros();
+
+    				transition_out(if_block2, 1, 1, () => {
+    					if_block2 = null;
+    				});
+
+    				check_outros();
     			}
     		},
-    		i: noop,
-    		o: noop,
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(if_block0);
+    			transition_in(if_block1);
+    			transition_in(if_block2);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(if_block0);
+    			transition_out(if_block1);
+    			transition_out(if_block2);
+    			current = false;
+    		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(main);
-    			if (if_block) if_block.d();
-    			mounted = false;
-    			dispose();
+    			if (if_block0) if_block0.d();
+    			if (if_block1) if_block1.d();
+    			if (if_block2) if_block2.d();
     		}
     	};
 
@@ -585,43 +1388,47 @@ var app = (function () {
     }
 
     function instance($$self, $$props, $$invalidate) {
+    	let $gameState;
+    	validate_store(gameState, 'gameState');
+    	component_subscribe($$self, gameState, $$value => $$invalidate(1, $gameState = $$value));
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('App', slots, []);
-    	let feeling;
     	let { C } = $$props;
+    	console.log($gameState);
     	const writable_props = ['C'];
 
     	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<App> was created with unknown prop '${key}'`);
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console_1.warn(`<App> was created with unknown prop '${key}'`);
     	});
 
-    	function input_input_handler() {
-    		feeling = this.value;
-    		$$invalidate(0, feeling);
-    	}
-
     	$$self.$$set = $$props => {
-    		if ('C' in $$props) $$invalidate(1, C = $$props.C);
+    		if ('C' in $$props) $$invalidate(0, C = $$props.C);
     	};
 
-    	$$self.$capture_state = () => ({ Age, feeling, C });
+    	$$self.$capture_state = () => ({
+    		Main,
+    		Prestart,
+    		Start,
+    		C,
+    		gameState,
+    		$gameState
+    	});
 
     	$$self.$inject_state = $$props => {
-    		if ('feeling' in $$props) $$invalidate(0, feeling = $$props.feeling);
-    		if ('C' in $$props) $$invalidate(1, C = $$props.C);
+    		if ('C' in $$props) $$invalidate(0, C = $$props.C);
     	};
 
     	if ($$props && "$$inject" in $$props) {
     		$$self.$inject_state($$props.$$inject);
     	}
 
-    	return [feeling, C, input_input_handler];
+    	return [C, $gameState];
     }
 
     class App extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance, create_fragment, safe_not_equal, { C: 1 });
+    		init(this, options, instance, create_fragment, safe_not_equal, { C: 0 });
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -633,8 +1440,8 @@ var app = (function () {
     		const { ctx } = this.$$;
     		const props = options.props || {};
 
-    		if (/*C*/ ctx[1] === undefined && !('C' in props)) {
-    			console.warn("<App> was created without expected prop 'C'");
+    		if (/*C*/ ctx[0] === undefined && !('C' in props)) {
+    			console_1.warn("<App> was created without expected prop 'C'");
     		}
     	}
 
@@ -646,11 +1453,6 @@ var app = (function () {
     		throw new Error("<App>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
     	}
     }
-
-    var constants = {
-      name: 'Bort',
-      age: 42
-    };
 
     const app = new App({
     	target: document.body,

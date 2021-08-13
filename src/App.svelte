@@ -1,16 +1,27 @@
 <script>
-  import Age from './Age.svelte'
-  let feeling
-	export let C
+  import Main from './Main.svelte'
+  import Prestart from './Prestart.svelte'
+  import Start from './Start.svelte'
+  export let C
+  import {
+    gameState
+  } from './stores'
+  console.log($gameState)
 </script>
 
 <main>
-  {#if feeling}
-  <h1>Hi {feeling}, I'm dad!</h1>
+  {#if $gameState === C.gameStates.prestart}
+    <Prestart/>
   {/if}
-  <p>How are you feeling today?</p>
-  <input bind:value={feeling}>
-  <!-- <Age age={C.age} /> -->
+
+  {#if $gameState === C.gameStates.setup}
+    <Start/>
+  {/if}
+
+  {#if $gameState === C.gameStates.main}
+    <Main/>
+  {/if}
+
 	<p>Visit the <a href="https://svelte.dev/tutorial">Svelte tutorial</a> to learn how to build Svelte apps.</p>
 </main>
 
@@ -20,13 +31,6 @@
 		padding: 1em;
 		max-width: 240px;
 		margin: 0 auto;
-	}
-
-	h1 {
-		color: #ff3e00;
-		text-transform: uppercase;
-		font-size: 4em;
-		font-weight: 100;
 	}
 
 	@media (min-width: 640px) {
