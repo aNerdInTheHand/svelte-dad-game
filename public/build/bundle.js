@@ -994,6 +994,7 @@ var app = (function () {
     const file$3 = "src/setup/Welcome.svelte";
 
     function create_fragment$3(ctx) {
+    	let div;
     	let p0;
     	let t1;
     	let p1;
@@ -1002,37 +1003,40 @@ var app = (function () {
 
     	const block = {
     		c: function create() {
+    			div = element("div");
     			p0 = element("p");
-    			p0.textContent = "Welcome to the dad game!\n  Here, you can simulate all the fun and excitement of being a dad,\n  without actually getting sicked on. Unless you're already a dad,\n  in which case you're playing this whilst covered in sick.";
+    			p0.textContent = "Welcome to the dad game!\n    Here, you can simulate all the fun and excitement of being a dad,\n    without actually getting sicked on. Unless you're already a dad,\n    in which case you're playing this whilst covered in sick.";
     			t1 = space();
     			p1 = element("p");
-    			p1.textContent = "Just like in real life, you'll be presented with a series of challenges\n  and will have to decide how best to react to each one. And just like in\n  real life, each decision will be a trade-off. The trick is to meet your\n  little cherub's every need whilst making sure your vital statistics\n  don't fall to dangerous levels. If they do, it's game over man!";
+    			p1.textContent = "Just like in real life, you'll be presented with a series of challenges\n    and will have to decide how best to react to each one. And just like in\n    real life, each decision will be a trade-off. The trick is to meet your\n    little cherub's every need whilst making sure your vital statistics\n    don't fall to dangerous levels. If they do, it's game over man!";
     			t3 = space();
     			p2 = element("p");
     			p2.textContent = "Fill in your details below and get started.";
-    			add_location(p0, file$3, 0, 0, 0);
-    			add_location(p1, file$3, 6, 0, 231);
-    			add_location(p2, file$3, 13, 0, 598);
+    			attr_dev(p0, "class", "svelte-12rx1go");
+    			add_location(p0, file$3, 1, 2, 8);
+    			attr_dev(p1, "class", "svelte-12rx1go");
+    			add_location(p1, file$3, 7, 2, 251);
+    			attr_dev(p2, "class", "svelte-12rx1go");
+    			add_location(p2, file$3, 14, 2, 632);
+    			attr_dev(div, "class", "svelte-12rx1go");
+    			add_location(div, file$3, 0, 0, 0);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, p0, anchor);
-    			insert_dev(target, t1, anchor);
-    			insert_dev(target, p1, anchor);
-    			insert_dev(target, t3, anchor);
-    			insert_dev(target, p2, anchor);
+    			insert_dev(target, div, anchor);
+    			append_dev(div, p0);
+    			append_dev(div, t1);
+    			append_dev(div, p1);
+    			append_dev(div, t3);
+    			append_dev(div, p2);
     		},
     		p: noop,
     		i: noop,
     		o: noop,
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(p0);
-    			if (detaching) detach_dev(t1);
-    			if (detaching) detach_dev(p1);
-    			if (detaching) detach_dev(t3);
-    			if (detaching) detach_dev(p2);
+    			if (detaching) detach_dev(div);
     		}
     	};
 
@@ -1435,9 +1439,10 @@ var app = (function () {
     			a.textContent = "Svelte tutorial";
     			t5 = text(" to learn how to build Svelte apps.");
     			attr_dev(a, "href", "https://svelte.dev/tutorial");
-    			add_location(a, file, 25, 14, 481);
+    			add_location(a, file, 25, 29, 496);
+    			attr_dev(p, "class", "footer svelte-gli7l7");
     			add_location(p, file, 25, 1, 468);
-    			attr_dev(main, "class", "svelte-c5ywc6");
+    			attr_dev(main, "class", "svelte-gli7l7");
     			add_location(main, file, 12, 0, 264);
     		},
     		l: function claim(nodes) {

@@ -23,7 +23,7 @@
     <Main/>
   {/if}
 
-	<p>Visit the <a href="https://svelte.dev/tutorial">Svelte tutorial</a> to learn how to build Svelte apps.</p>
+	<p class='footer'>Visit the <a href="https://svelte.dev/tutorial">Svelte tutorial</a> to learn how to build Svelte apps.</p>
 </main>
 
 <style>
@@ -39,4 +39,9 @@
 			max-width: none;
 		}
 	}
+
+  .footer {
+    position: fixed;
+    bottom: 0;
+  }
 </style>
