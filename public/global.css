@@ -5,7 +5,8 @@ html, body {
 }
 
 body {
-	color: #333;
+	background-color: #1e2a3d;;
+	color: #bada55;
 	margin: 0;
 	padding: 8px;
 	box-sizing: border-box;
@@ -45,9 +46,17 @@ input:disabled {
 }
 
 button {
-	color: #333;
-	background-color: #f4f4f4;
-	outline: none;
+	border: 3px solid #1b1d3a;;
+  background-color: #BADA55;
+  color: #1e2a3d;
+  font-weight: bold;
+  margin: 1rem 0;
+  width: 20rem;
+}
+
+button:hover {
+	background-color: #1b1d3a;
+	color: #bada55;
 }
 
 button:disabled {

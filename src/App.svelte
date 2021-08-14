@@ -1,6 +1,7 @@
 <script>
   import Main from './Main.svelte'
   import Prestart from './Prestart.svelte'
+  import Setup from './setup/Setup.svelte'
   import Start from './Start.svelte'
   export let C
   import {
@@ -15,7 +16,7 @@
   {/if}
 
   {#if $gameState === C.gameStates.setup}
-    <Start/>
+    <Setup/>
   {/if}
 
   {#if $gameState === C.gameStates.main}
@@ -27,10 +28,10 @@
 
 <style>
 	main {
-		text-align: center;
-		padding: 1em;
-		max-width: 240px;
+    max-width: 240px;
 		margin: 0 auto;
+    padding: 1em;
+		text-align: center;
 	}
 
 	@media (min-width: 640px) {
